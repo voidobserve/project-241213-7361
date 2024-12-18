@@ -74,9 +74,27 @@ u8 abuf;
 u8 statusbuf;
 
 //===============Global Variable===============
-u16 i;
+u16 i; // 循环计数值
 
 u16 tmp;
+
+// ===================================================
+// pwm灯光相关配置                                   //
+// ===================================================
+#define WHITE_PWM_DUTY_REG (T2DATA)  // 设置白灯pwm占空比的寄存器
+#define YELLOW_PWM_DUTY_REG (T0DATA) // 设置黄灯pwm占空比的寄存器
+volatile u8 cur_w_pwm_duty;          // 记录白灯对应的pwm占空比
+volatile u8 cur_y_pwm_duty;          // 记录黄灯对应的pwm占空比
+
+// 定义当前灯光的状态(用于状态机中)
+enum
+{
+    CUR_LIGHT_STATUS_OFF,
+    CUR_LIGHT_STATUS_WHITE,
+    CUR_LIGHT_STATUS_YELLOW,
+    CUR_LIGHT_STATUS_WHITE_YELLOW,
+};
+volatile u8 cur_light_status; // 存档当前灯光状态的状态机
 
 // ===================================================
 // adc相关配置                                       //
@@ -252,8 +270,10 @@ typedef enum
 
 // 单线通信使用的宏
 #define BIT(x) (1 << x)
-#define SEND_DATA_LEN 3 // 发送数据长度
-#define RX_DATA_LEN 3   // 接收数据长度
+#define SEND_DATA_LEN 3                   // 发送数据长度
+#define RX_DATA_LEN 3                     // 接收数据长度
+volatile uint8_t send_buf[SEND_DATA_LEN]; // 单线通信的数据缓冲区
+// volatile u8 recv_buf[SEND_DATA_LEN]; // 单线通信的接收缓冲区
 
 // 单线通信使用的全局变量
 // 全局变量
@@ -265,9 +285,9 @@ static uint8_t g_state = IDLE;      // 当前状态
 static uint8_t g_last_pin_state;    // 上一次引脚状态
 uint8_t pin_state;
 
-#define set_pin_low()     // 设置引脚低电平
-#define set_pin_high()    // 设置引脚高电平
-#define get_pin_state() 0 // 获取引脚状态
+#define set_pin_low() (P13D = 0)  // 设置引脚低电平
+#define set_pin_high() (P13D = 1) // 设置引脚高电平
+#define get_pin_state() (P16D)    // 获取引脚状态
 
 // adc采样，滤波函数中使用的变量：
 u16 adc_val_tmp; // 临时存放单次转换中采集的ad值
@@ -281,7 +301,7 @@ volatile u8 ad_key_event; // 存放按键检测函数检测到的按键事件
 volatile u8 cur_key_id;   // 存放按键检测函数检测到的按键id
 
 volatile u8 set_time_hold_cnt; // 设置时间的长按计数
-volatile u16 cur_time;         // 存放当前时间 0~9999 -> 00:00 ~ 99:99
+// volatile u16 cur_time;         // 存放当前时间 0~9999 -> 00:00 ~ 99:99
 
 enum
 {
@@ -292,14 +312,43 @@ enum
 };
 volatile u8 cur_status; // 记录当前的状态（状态机）
 
-u16 set_time_delay_cnt; // 调节时间时，让数码管闪烁得到时间计时
-u16 set_time_done_cnt;  // 调节时间时，没有操作的持续时间计时
+volatile u16 set_time_delay_cnt;         // 调节时间时，让数码管闪烁得到时间计时
+volatile u16 set_time_done_cnt;          // 调节时间时，没有操作的持续时间计时
+uint8_t thousand, hundred, decade, unit; // 时间 0~9999
+// u8 hour, min;
 
 //===============Global Function===============
 void Sys_Init(void);
 void CLR_RAM(void);
 void IO_Init(void);
 void delay_ms(u16 xms);
+void delay_us(u8 xus);
+void adc_config(void);
+void timer1_config(void); // 定时器配置，使用外部晶振作为时钟源
+void timer3_config(void);
+void pwm_led_config(void);
+
+void start_send(uint8_t *data);
+void timer_100us_isr(void);
+
+void adc_channel_sel(u8 adc_channel);
+u16 adc_single_convert(void);
+u16 adc_get_val(void);
+u8 get_key_id(void);
+void ad_key_event_10ms_isr(void);
+void key_ad_key_event_deal(void);
+
+// void bsp_i2c_init(void);
+void bsp_i2c_start(void);
+void bsp_i2c_tx_byte(uint8_t dat);
+u8 bsp_i2c_rx_ack(void);
+void bsp_i2c_stop(void);
+void TM1650_WriteByte(uint8_t addr, uint8_t data);
+void TM1650_Clear(void);
+void TM1650_Init(void);
+void TM1650_DisplayBit(uint8_t pos, uint8_t num);
+
+void TM1650_DisplayNum(); // 显示数字(0-9999)
 
 //============Define  Flag=================
 typedef union
@@ -321,6 +370,9 @@ volatile bit_flag flag1;
 // u8 flag_10ms;
 #define flag_10ms flag1.bits.bit0
 #define flag_is_ble_open flag1.bits.bit1 // 标志位，蓝牙是否开启，0--未开启，1--开启
+#define adjust_pwm_dir flag1.bits.bit2   // 调节灯光亮度(pwm占空比)的方向, 0--降低，1--增加
+// #define _adjust_pwm_dit flag1.bits.bit3 //
+
 // #define flag_set_time flag1.bits.bit1
 // #define g_last_pin_state flag1.bits.bit1 // 单线通信--上一次引脚状态
 // #define pin_state flag1.bits.bit2 // 单线通信--上一次引脚状态

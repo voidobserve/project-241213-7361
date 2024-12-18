@@ -96,15 +96,16 @@ void adc_config(void)
     ADEN = 1;
 }
 
-void timer0_config(void)
-{
-    // T0CR = DEF_SET_BIT0 | DEF_SET_BIT2; // 定时模式,CPU,32分频
-    // T0CNT = 250 - 1;                    // 1ms
-    // T0LOAD = 250 - 1;
-    // T0EN = 1;
-    // T0IE = 1;
-}
+// void timer0_config(void)
+// {
+// T0CR = DEF_SET_BIT0 | DEF_SET_BIT2; // 定时模式,CPU,32分频
+// T0CNT = 250 - 1;                    // 1ms
+// T0LOAD = 250 - 1;
+// T0EN = 1;
+// T0IE = 1;
+// }
 
+// 定时器配置，使用外部晶振作为时钟源
 void timer1_config(void)
 {
     // T1CR = DEF_SET_BIT0 | DEF_SET_BIT2 | DEF_SET_BIT3 | DEF_SET_BIT4; // 定时模式,FLOSC,32分频
@@ -115,11 +116,12 @@ void timer1_config(void)
     T1IE = 1;
 }
 
+//
 void timer3_config(void)
 {
-    T3CR = DEF_SET_BIT0 | DEF_SET_BIT2; // 定时模式,CPU,32分频
-    T3CNT = 250 - 1;                    // 1ms
-    T3LOAD = 250 - 1;
+    T3CR = 0x03; // 定时模式,CPU,8分频
+    // T3CNT = 100 - 1;
+    T3LOAD = 100 - 1; // 8分频后，这里是100us触发一次中断
     T3EN = 1;
     T3IE = 1;
 }
@@ -131,12 +133,12 @@ void pwm_led_config(void)
     T0CR = DEF_SET_BIT6 | DEF_SET_BIT0 | DEF_SET_BIT1; // 使能PWM,CPU,8分频
     T0CNT = 255 - 1;
     T0LOAD = 255 - 1; //
-    T0DATA = 0;
+    // T0DATA = 0; // 初始值就是0
 
     T2CR = DEF_SET_BIT6 | DEF_SET_BIT0 | DEF_SET_BIT1; // 使能PWM,CPU,8分频
     T2CNT = 255 - 1;
     T2LOAD = 255 - 1; //
-    T2DATA = 0;
+    // T2DATA = 0;  // 初始值就是0
 
     PWMCR1 = 0x00; // pwm工作于普通模式
     PWMCR3 = 0x04; // PWM0选择P02端口输出
@@ -247,8 +249,18 @@ void timer_100us_isr(void)
                 }
             }
             break;
+
+        default:
+            break;
         }
+
         return;
+    }
+    else
+    {
+        // P13PU = 1; // 上拉
+        // P13OE = 1; // 输入模式
+        set_pin_high();
     }
 
     // 接收处理
@@ -318,21 +330,24 @@ void timer_100us_isr(void)
 
     case RX_END:
         // 在这里可以处理接收到的数据g_data
+
+        // send_data_msb(send_buf[0] << 8 | send_buf[]);
+
         g_state = IDLE;
         break;
     }
     g_last_pin_state = pin_state;
 }
 
-// 使用示例
-void example(void)
-{
-    uint8_t send_buf[SEND_DATA_LEN] = {0x01, 0x02, 0x03};
-    // 发送新数据
-    start_send(send_buf);
+// // 使用示例
+// void example(void)
+// {
+//     uint8_t send_buf[SEND_DATA_LEN] = {0x01, 0x02, 0x03};
+//     // 发送新数据
+//     start_send(send_buf);
 
-    // 接收到的数据可以在RX_END状态下处理
-}
+//     // 接收到的数据可以在RX_END状态下处理
+// }
 
 void Sys_Init(void)
 {
@@ -341,7 +356,7 @@ void Sys_Init(void)
     IO_Init();
 
     adc_config();
-    // timer1_config();
+    timer1_config();
     TM1650_Init();
     pwm_led_config();
     timer3_config();
@@ -353,8 +368,14 @@ void Sys_Init(void)
     // 蓝牙控制引脚，配置为输入模式
     BLE_CTL_PIN_IN();
 
+    // 单线通信的数据接收引脚：
+    P16PU = 1; // 上拉
+    P16OE = 0; // 输入模式
+
     ad_key_event = KEY_EVENT_NONE;
     cur_key_id = AD_KEY_ID_NONE;
+    cur_w_pwm_duty = 255;
+    cur_y_pwm_duty = 255;
 
     GIE = 1;
 }
@@ -429,29 +450,74 @@ u8 get_key_id(void)
 
 void ad_key_event_10ms_isr(void)
 {
-    static u8 last = AD_KEY_ID_NONE;
-    static u8 count = 0;
+    static volatile u8 last_key_id = AD_KEY_ID_NONE;
+    static volatile u8 count = 0; // 长按计数
+    // static volatile u8 filter_cnt = 0;                 // 按键消抖，使用的变量
+    // static volatile u8 filter_key_id = AD_KEY_ID_NONE; // 消抖时记录上一次采集到的按键id
     // 有按键按下时返回 AD_KEY_ID ，无按键返回 KEY_ID_NONE
     // 找到 id_table[] 中对应的按键:
     cur_key_id = get_key_id();
 
+    // if (cur_key_id != filter_key_id && cur_key_id != AD_KEY_ID_NONE)
+    // if (cur_key_id != filter_key_id && filter_cnt)
+    // if (cur_key_id != filter_key_id)
+    // { // 如果有按键按下
+    //     filter_cnt = 0;
+    //     filter_key_id = cur_key_id;
+    //     return;
+    // }
+    // else
+    // {
+    //     if (filter_cnt < 2)
+    //     { // 如果检测到相同的按键按下/松开
+    //         // 防止计数溢出
+    //         filter_cnt++;
+    //         return;
+    //     }
+    // }
+
+    // if (filter_cnt < 2)
+    // { // 如果检测到相同的按键按下/松开
+    //     // 防止计数溢出
+    //     filter_cnt++;
+    //     // ad_key_event = KEY_EVENT_NONE; // 加上这句，会无法识别短按
+    //     return;
+    // }
+
     // if (cur_key_id < AD_KEY_ID_NONE)
     //     send_data_msb(cur_key_id); // 测试发现这里可以得到对应的按键id
 
-    if (last != cur_key_id) // 如果有按下 / 抬起动作
+    if (last_key_id != cur_key_id) // 如果有按下 / 抬起动作
     {
-        if (last == AD_KEY_ID_NONE)
-        {
-            // 按下
+        if (last_key_id == AD_KEY_ID_NONE)
+        { // 按下
             count = 0;
         }
         else if (cur_key_id == AD_KEY_ID_NONE)
-        {
-            // 抬起
+        { // 抬起
             if (count < 75)
             {
                 // 短按  -->  ad_key_event
                 ad_key_event = KEY_EVENT_CLICK;
+            }
+            else
+            {
+                // 长按 / 长按持续后松手
+                // if (AD_KEY_ID_MID == last_key_id && KEY_EVENT_HOLD == ad_key_event) // 不能使用这个判断条件
+                if (AD_KEY_ID_MID == last_key_id)
+                {
+                    // 如果是调节灯光亮度的按键长按后又松手
+                    // DEBUG_PIN = ~DEBUG_PIN;
+                    // adjust_pwm_dir = !adjust_pwm_dir; // 改变灯光调节的方向 （该语句比下面到的语句更占用程序空间）
+                    if (adjust_pwm_dir)
+                    {
+                        adjust_pwm_dir = 0;
+                    }
+                    else
+                    {
+                        adjust_pwm_dir = 1;
+                    }
+                } // if (AD_KEY_ID_MID == last_key_id)
             }
         }
         else
@@ -460,24 +526,20 @@ void ad_key_event_10ms_isr(void)
         }
     }
     else if (cur_key_id != AD_KEY_ID_NONE)
-    {
-        // 持续按下
+    { // 持续按下
         count++;
-
-        if (count == 70)
-        {
-            // 长按  -->  ad_key_event
+        if (count == 75)
+        { // 长按  -->  ad_key_event
             ad_key_event = KEY_EVENT_LONG;
         }
-        else if (count >= 70 + 10)
-        {
-            // 持续长按  -->  ad_key_event
+        else if (count >= 75 + 15)
+        { // 持续长按  -->  ad_key_event
             ad_key_event = KEY_EVENT_HOLD;
-            count = 70;
+            count = 75;
         }
     }
 
-    last = cur_key_id;
+    last_key_id = cur_key_id;
 }
 
 void key_ad_key_event_deal(void)
@@ -515,10 +577,9 @@ void key_ad_key_event_deal(void)
         break;
     }
 
-    // if (cur_key_id < AD_KEY_ID_NONE)
     if (cur_key_id < AD_KEY_ID_NONE && ad_key_event != KEY_EVENT_NONE)
     {
-        // send_data_msb(cur_key_id); // 能检测到按键id,但是event==3
+        // send_data_msb(cur_key_id); // 能检测到按键id
         // send_data_msb(ad_key_event);
 
         switch (key_event_table[cur_key_id][ad_key_event])
@@ -545,18 +606,119 @@ void key_ad_key_event_deal(void)
             break;
 
         case KEY_MID_CLICK:
+            // 灯的模式切换按键，短按
+            // DEBUG_PIN = ~DEBUG_PIN;
+
+            switch (cur_light_status)
+            {
+            case CUR_LIGHT_STATUS_OFF:
+                // 开灯
+                WHITE_PWM_DUTY_REG = cur_w_pwm_duty;
+                cur_light_status = CUR_LIGHT_STATUS_WHITE;
+                break;
+            case CUR_LIGHT_STATUS_WHITE:
+                WHITE_PWM_DUTY_REG = 0;
+                YELLOW_PWM_DUTY_REG = cur_y_pwm_duty;
+                cur_light_status = CUR_LIGHT_STATUS_YELLOW;
+                break;
+            case CUR_LIGHT_STATUS_YELLOW:
+                WHITE_PWM_DUTY_REG = cur_w_pwm_duty;
+                YELLOW_PWM_DUTY_REG = cur_y_pwm_duty;
+                cur_light_status = CUR_LIGHT_STATUS_WHITE_YELLOW;
+                break;
+            default: // CUR_LIGHT_STATUS_WHITE_YELLOW == cur_light_status
+                WHITE_PWM_DUTY_REG = 0;
+                YELLOW_PWM_DUTY_REG = 0;
+                cur_light_status = CUR_LIGHT_STATUS_OFF;
+                break;
+            }
 
             break;
 
         case KEY_MID_HOLD:
+            // switch (cur_light_status)
+            // {
+            // case CUR_LIGHT_STATUS_OFF:
+            //     // 无操作
+            //     break;
+            // case CUR_LIGHT_STATUS_WHITE:
 
+            // DEBUG_PIN = ~DEBUG_PIN;
+
+            if (adjust_pwm_dir)
+            { // 增大亮度
+                if (CUR_LIGHT_STATUS_WHITE == cur_light_status ||
+                    CUR_LIGHT_STATUS_WHITE_YELLOW == cur_light_status)
+                {
+
+                    if (cur_w_pwm_duty < 255 - 19)
+                    {
+                        cur_w_pwm_duty += 18;
+                    }
+                    else
+                    {
+                        cur_w_pwm_duty = 255;
+                    }
+
+                    WHITE_PWM_DUTY_REG = cur_w_pwm_duty;
+                }
+
+                if (CUR_LIGHT_STATUS_YELLOW == cur_light_status ||
+                    CUR_LIGHT_STATUS_WHITE_YELLOW == cur_light_status)
+                {
+                    if (cur_y_pwm_duty < 255 - 19)
+                    {
+                        cur_y_pwm_duty += 18;
+                    }
+                    else
+                    {
+                        cur_y_pwm_duty = 255;
+                    }
+
+                    YELLOW_PWM_DUTY_REG = cur_y_pwm_duty;
+                }
+            } // if (adjust_pwm_dir)
+            else
+            { // 减小亮度
+                if (CUR_LIGHT_STATUS_WHITE == cur_light_status ||
+                    CUR_LIGHT_STATUS_WHITE_YELLOW == cur_light_status)
+                {
+
+                    if (cur_w_pwm_duty > 25 + 19)
+                    {
+                        cur_w_pwm_duty -= 18;
+                    }
+                    else
+                    {
+                        cur_w_pwm_duty = 25;
+                    }
+
+                    WHITE_PWM_DUTY_REG = cur_w_pwm_duty;
+                }
+
+                if (CUR_LIGHT_STATUS_YELLOW == cur_light_status ||
+                    CUR_LIGHT_STATUS_WHITE_YELLOW == cur_light_status)
+                {
+                    if (cur_y_pwm_duty > 25 + 19)
+                    {
+                        cur_y_pwm_duty -= 18;
+                    }
+                    else
+                    {
+                        cur_y_pwm_duty = 25;
+                    }
+
+                    YELLOW_PWM_DUTY_REG = cur_y_pwm_duty;
+                }
+            } // if (adjust_pwm_dir) else
+            // }
             break;
 
         case KEY_SEL_HOLD:
             // P22D = ~P22D;
-            // 刚进入这里，已经过了800ms
+            // 刚进入这里，已经过了750 + 150ms
             set_time_hold_cnt++;
-            if (set_time_hold_cnt >= 220)
+            if (set_time_hold_cnt >= 14) // 14 * 150ms == 2100ms
             {
                 set_time_hold_cnt = 0;
                 cur_status = STATUS_SET_TIME_HOUR;
@@ -567,17 +729,35 @@ void key_ad_key_event_deal(void)
         case KEY_RIGHT_CLICK:
 
             set_time_done_cnt = 0;
+            set_time_delay_cnt = 0;
             if (STATUS_SET_TIME_HOUR == cur_status)
             {
-                if (cur_time < 2300)
-                    cur_time += 100;
+                // if (cur_time < 2300)
+                // {
+                //     cur_time += 100;
+                // }
+
+                // if (hour < 23)
+                // {
+                //     hour++;
+                // }
+
+                // TM1650_DisplayNum(cur_time);
+                TM1650_DisplayNum();
             }
             else if (STATUS_SET_TIME_MIN == cur_status)
             {
-                if ((cur_time % 100) < 59)
-                {
-                    cur_time++;
-                }
+                // if ((cur_time % 100) < 59)
+                // {
+                //     cur_time++;
+                // }
+
+                // if (min < 59)
+                // {
+                //     min++;
+                // }
+
+                TM1650_DisplayNum();
             }
 
             break;
@@ -597,17 +777,44 @@ void key_ad_key_event_deal(void)
         case KEY_LEFT_CLICK:
 
             set_time_done_cnt = 0;
+            set_time_delay_cnt = 0;
             if (STATUS_SET_TIME_HOUR == cur_status)
             {
-                if (cur_time > 0)
-                    cur_time -= 100;
+                // if (cur_time > 0)
+                // {
+                //     cur_time -= 100;
+                // }
+
+                // if (hour > 0)
+                // {
+                //     hour--;
+                // }
+
+                if (thousand < 2 && hundred < 3)
+                {
+                    hundred++;
+                    if (hundred > 2)
+                    {
+                        hundred = 0;
+                        thousand++;
+                    }
+                }
+
+                TM1650_DisplayNum();
             }
             else if (STATUS_SET_TIME_MIN == cur_status)
             {
-                if ((cur_time % 100) > 0)
-                {
-                    cur_time--;
-                }
+                // if ((cur_time % 100) > 0)
+                // {
+                //     cur_time--;
+                // }
+
+                // if (min > 0)
+                // {
+                //     min--;
+                // }
+
+                TM1650_DisplayNum();
             }
 
             break;
@@ -626,13 +833,13 @@ void key_ad_key_event_deal(void)
 
 #endif
 
-void bsp_i2c_init(void)
-{
-    I2C_SDA_OUT();
-    I2C_SCL_OUT();
-    I2C_SDA_H();
-    delay_ms(5);
-}
+// void bsp_i2c_init(void)
+// {
+//     I2C_SDA_OUT();
+//     I2C_SCL_OUT();
+//     I2C_SDA_H();
+//     delay_ms(5);
+// }
 void bsp_i2c_start(void)
 {
     I2C_SDA_OUT();
@@ -703,64 +910,88 @@ void TM1650_WriteByte(uint8_t addr, uint8_t data)
 }
 
 // 清空显示
-void TM1650_Clear(void)
-{
-    // 清空4个数码管
-    TM1650_WriteByte(0x68, 0x00); // 第1位
-    TM1650_WriteByte(0x6A, 0x00); // 第2位
-    TM1650_WriteByte(0x6C, 0x00); // 第3位
-    TM1650_WriteByte(0x6E, 0x00); // 第4位
-}
+// void TM1650_Clear(void)
+// {
+//     // 清空4个数码管
+//     TM1650_WriteByte(0x68, 0x00); // 第1位
+//     TM1650_WriteByte(0x6A, 0x00); // 第2位
+//     TM1650_WriteByte(0x6C, 0x00); // 第3位
+//     TM1650_WriteByte(0x6E, 0x00); // 第4位
+// }
+
+// 显示冒号
+// void TM1650_show_colon(void)
+// {
+//     TM1650_WriteByte(0x6E, )
+// }
 
 // 初始化TM1650
 void TM1650_Init(void)
 {
-    bsp_i2c_init();
+    // bsp_i2c_init();
+    I2C_SDA_OUT();
+    I2C_SCL_OUT();
+    I2C_SDA_H();
+    delay_ms(5);
 
     // 设置数据命令
-    TM1650_WriteByte(0x48, 0x01); // 开启显示
+    // TM1650_WriteByte(0x48, 0x01); // 开启显示
 
     // 设置亮度(最大亮度)
     TM1650_WriteByte(0x48, TM1650_DISPLAY_ON | TM1650_BRIGHT_MAX);
 
     // 清空显示
-    TM1650_Clear();
+    // TM1650_Clear();
 }
 
-// 显示单个数字
-void TM1650_DisplayBit(uint8_t pos, uint8_t num)
-{
-    uint8_t addr;
+// 显示时间中的单个数字 0~9，
+// void TM1650_DisplayBit(uint8_t pos, uint8_t num)
+// {
+//     uint8_t addr;
 
-    // if (pos > 4 || num > 9)
-    //     return; // 参数检查
+//     // if (pos > 4 || num > 9)
+//     //     return; // 参数检查
 
-    // 计算位置对应的地址
-    addr = 0x68 + (pos - 1) * 2;
+//     // 计算位置对应的地址
+//     addr = 0x68 + (pos - 1) * 2;
 
-    // 写入段码
-    TM1650_WriteByte(addr, NUM_TABLE[num]);
-}
+//     if (addr == 0x6C)
+//     {
+//         TM1650_WriteByte(addr, NUM_TABLE[num] | 0x04);
+//     }
+//     else
+//     {
+//         // 写入段码
+//         TM1650_WriteByte(addr, NUM_TABLE[num]);
+//     }
+// }
 
 // 显示数字(0-9999)
-void TM1650_DisplayNum(uint16_t num)
+void TM1650_DisplayNum(void)
 {
-    uint8_t thousand, hundred, decade, unit;
 
-    if (num > 9999)
-        return; // 参数检查
+    // if (num > 9999)
+    //     return; // 参数检查
 
     // 分离各个位
-    thousand = num / 1000;
-    hundred = (num % 1000) / 100;
-    decade = (num % 100) / 10;
-    unit = num % 10;
+    // thousand = num / 1000;
+    // hundred = (num % 1000) / 100;
+    // decade = (num % 100) / 10;
+    // unit = num % 10;
 
     // 显示各个位
-    TM1650_DisplayBit(4, thousand);
-    TM1650_DisplayBit(3, hundred);
-    TM1650_DisplayBit(2, decade);
-    TM1650_DisplayBit(1, unit);
+    // TM1650_DisplayBit(4, thousand);
+    // TM1650_DisplayBit(3, hundred);
+    // TM1650_DisplayBit(2, decade);
+    // TM1650_DisplayBit(1, unit);
+    // TM1650_WriteByte(0x68, NUM_TABLE[hour / 10]);        // 第1位
+    // TM1650_WriteByte(0x6A, NUM_TABLE[hour - hour / 10]); // 第2位
+    // TM1650_WriteByte(0x6C, NUM_TABLE[min / 10] | 0x04);  // 第3位
+    // TM1650_WriteByte(0x6E, NUM_TABLE[min - min / 10]);   // 第4位
+    TM1650_WriteByte(0x68, NUM_TABLE[unit]);           // 第1位
+    TM1650_WriteByte(0x6A, NUM_TABLE[decade]);         // 第2位
+    TM1650_WriteByte(0x6C, NUM_TABLE[hundred] | 0x04); // 第3位
+    TM1650_WriteByte(0x6E, NUM_TABLE[thousand]);       // 第4位
 }
 
 /************************************************
@@ -778,22 +1009,38 @@ void main(void)
         adc_channel_sel(ADC_CHANNEL_KEY);
         key_ad_key_event_deal();
 
+        { // 低电量检测：
+            static u8 low_power_cnt = 0;
+            adc_channel_sel(ADC_CHANNEL_VDD);
+            adc_val = adc_get_val();
+            if (adc_val <= 2048)
+            { // 如果检测到低电量
+                low_power_cnt++;
+            }
+            else
+            { // 如果有一次检测不到低电量
+                low_power_cnt = 0;
+            }
+
+            if (low_power_cnt >= 10)
+            {
+                low_power_cnt = 0;
+
+                // 如果连续多次检测到低电量
+                // 发送低电量信息
+            }
+        } // 低电量检测
+
         if (STATUS_SET_TIME_HOUR == cur_status)
         { // 设置小时
-            // TM1650_DisplayNum(cur_time);
-            // delay_ms(500);
-            // TM1650_WriteByte(0x6E, 0x00); // 第4位
-            // TM1650_WriteByte(0x6C, 0x00); // 第3位
-            // delay_ms(500);
-
             if (set_time_delay_cnt < 500)
             {
-                TM1650_DisplayNum(cur_time);
+                TM1650_DisplayNum();
             }
             else
             {
-                TM1650_WriteByte(0x6E, 0x00); // 第4位
-                TM1650_WriteByte(0x6C, 0x00); // 第3位
+                TM1650_WriteByte(0x6E, 0x00);        // 第4位
+                TM1650_WriteByte(0x6C, 0x00 | 0x04); // 第3位
 
                 if (set_time_delay_cnt >= 1000 - 1)
                 {
@@ -809,15 +1056,9 @@ void main(void)
         }
         else if (STATUS_SET_TIME_MIN == cur_status)
         { // 设置分钟
-            // TM1650_DisplayNum(cur_time);
-            // delay_ms(500);
-            // TM1650_WriteByte(0x6A, 0x00); // 第2位
-            // TM1650_WriteByte(0x68, 0x00); // 第1位
-            // delay_ms(500);
-
             if (set_time_delay_cnt < 500)
             {
-                TM1650_DisplayNum(cur_time);
+                TM1650_DisplayNum();
             }
             else
             {
@@ -836,7 +1077,19 @@ void main(void)
                 set_time_done_cnt = 0;
             }
         }
-    }
+        else // STATUS_NONE == cur_status
+        {
+            TM1650_DisplayNum(); // 显示当前时间
+            // TM1650_WriteByte(0x6C, 0x04);
+        }
+
+        send_buf[0] = 0xA5;
+        send_buf[1] = 0x81;
+        send_buf[2] = 0x7E;
+        start_send(send_buf);
+        delay_ms(100);
+
+    } // while(1)
 }
 /************************************************
 ;  *    @函数名            : interrupt
@@ -855,11 +1108,11 @@ void int_isr(void) __interrupt
     // if (T0IF & T0IE)
     if (T1IF & T1IE)
     {
-        static u16 timer1_cnt = 0;
+        static volatile u16 timer1_cnt = 0;
         timer1_cnt++;
         if (timer1_cnt >= 1024)
         {
-            P12D = ~P12D;
+            // P12D = ~P12D;
             timer1_cnt = 0;
         }
 
@@ -879,20 +1132,39 @@ void int_isr(void) __interrupt
 
     if (T3IF & T3IE)
     {
-        static u8 timer3_cnt = 0;
+        // 目前是100us触发一次
+
+        static volatile u8 timer3_cnt = 0;
         timer3_cnt++;
-        if (timer3_cnt >= 10)
+
+        if (timer3_cnt >= 100) // 100us * 100 == 10ms
         {
-            flag_10ms = 1;
+            flag_10ms = 1; // 用于ad按键扫描
             timer3_cnt = 0;
         }
 
-        if (STATUS_SET_TIME_HOUR == cur_status ||
-            STATUS_SET_TIME_MIN == cur_status)
-        {
-            set_time_delay_cnt++;
-            set_time_done_cnt++;
+        { //
+            static u8 __set_time_cnt = 0;
+            __set_time_cnt++;
+
+            if (__set_time_cnt >= 10) // 1ms进入一次
+            {
+                __set_time_cnt = 0;
+                if (STATUS_SET_TIME_HOUR == cur_status ||
+                    STATUS_SET_TIME_MIN == cur_status)
+                {
+                    set_time_delay_cnt++;
+                    set_time_done_cnt++;
+                }
+                else
+                {
+                    set_time_delay_cnt = 0;
+                    set_time_done_cnt = 0;
+                }
+            }
         }
+
+        timer_100us_isr();
 
         T3IF = 0;
     }
